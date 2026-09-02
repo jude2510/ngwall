@@ -1,0 +1,11 @@
+# ParaView render output — regenerable from cascade runs via vtk_out.py.
+# ~115 MB across ~969 files; deliberately excluded to keep clones and the
+# cluster sync light.
+*_vtk/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# OS
+.DS_Store
