@@ -99,7 +99,10 @@ class Membrane:
         a, b, c = (X[self.faces[:, k]] for k in range(3))
         n = np.cross(b - a, c - a)
         norm = np.linalg.norm(n, axis=1)
-        nhat = n / norm[:, None]
+        # a zero-area triangle would make this 0/0 -> NaN, which spreads to
+        # the entire mesh within ~3 RK4 steps; the clip gives it a zero normal
+        # and hence zero area gradient -- no force, the correct limit.
+        nhat = n / np.clip(norm, 1e-300, None)[:, None]
         gA = 0.5 * np.stack(
             [np.cross(nhat, c - b), np.cross(nhat, a - c), np.cross(nhat, b - a)],
             axis=1)
