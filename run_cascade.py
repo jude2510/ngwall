@@ -106,7 +106,7 @@ GENUS_MAX = 25      # above this a wall is resolution-scale foam (see below)
 
 def cascade(mem, t_max, lmin, d_c=None, grace=0, cfl=0.2,
             vstop=0.999999, smooth_every=5, smooth_lam=0.25, coarsen_every=20,
-            max_steps=40000, wall_id="0", records=None, events=None,
+            max_steps=None, wall_id="0", records=None, events=None,
             vtk_dir=None, dt_snap=0.02, extent_min=None, save_states=None,
             genus_max=GENUS_MAX):
     """Evolve one wall to contact/caustic/t_max, recursing on fragments.
@@ -134,6 +134,11 @@ def cascade(mem, t_max, lmin, d_c=None, grace=0, cfl=0.2,
         events = []
     d_c = d_c if d_c is not None else 2 * lmin
     extent_min = extent_min if extent_min is not None else 20 * lmin
+    # dt ~ cfl*min_edge scales with lmin, so halving the resolution doubles
+    # the steps needed to reach t_max. A fixed budget silently truncates deep
+    # branches as "step-limit" at finer resolution; scale it instead.
+    if max_steps is None:
+        max_steps = int(10 * t_max / (cfl * lmin))
     det = ContactDetector()
     series = VtkSeries(vtk_dir, f"wall{wall_id}") if vtk_dir else None
     genus = getattr(mem, "genus", None)
