@@ -48,16 +48,16 @@ class ContactDetector:
     def __init__(self, k_ring=4, normal_dot=-0.5):
         self.k = k_ring
         self.ndot = normal_dot
-        self._faces_id = None
-        self._R = None
+        self._faces = None     # a live reference, not id(): CPython reuses
+        self._R = None         # freed arrays' addresses, so id() can alias
 
     def find(self, mem, d_c):
         """Return contact clusters as a list of vertex-index arrays,
         largest first (empty list: no contact)."""
         X, F = mem.X, mem.faces
-        if id(F) != self._faces_id:            # topology changed -> rebuild
+        if F is not self._faces or self._R.shape[0] != len(X):
             self._R = _khop(F, len(X), self.k)
-            self._faces_id = id(F)
+            self._faces = F    # holding it keeps its id from being reused
         pairs = cKDTree(X).query_pairs(d_c, output_type="ndarray")
         if len(pairs) == 0:
             return []
