@@ -11,92 +11,89 @@ domain walls likewise cascade into stable remnants, or does every fragment
 collapse? Strings never shrink; walls at rest collapse, so the endpoint may be
 qualitatively different.
 
+## Status (October 2026)
+
+**The production census (144 runs, July 2026) is not valid.** A code review
+with instrumented runs found:
+
+- **Walls passed through themselves undetected.** A typical random wall first
+  self-intersects at t ≈ 0.3, where it reaches v → 1 and folds over; the first
+  contact is detected at t ≈ 0.9, with ~180 crossings already present. The
+  folds lie within the detector's 4-hop exclusion, and vertex-pair detection at
+  `d_c` (a fifth of an edge) lets sheets cross between vertices.
+- **Surgery chose the wrong topology** in controlled tests: a clean neck pinch
+  became a tunnel (genus 0 → 1), and a pressed pancake went to genus 26.
+- **Almost no fragmentation happened.** 6859 of 6881 surgeries produced one
+  wall; a typical run is one wall gaining handles until genus > 25 ("foam").
+- **Tangential smoothing manufactures angular momentum** (|L| +1.7% in 0.4 time
+  units on a spinning wall; RK4 alone conserves it to 1e-10).
+
+**Cusps are physical.** Collapsing walls generically develop cuspidal edges
+and swallowtails from smooth initial data, and lattice field theory follows
+Nambu-Goto through them
+([arXiv:2509.19457](https://arxiv.org/abs/2509.19457),
+[arXiv:2605.22974](https://arxiv.org/abs/2605.22974)). The bare evolver — no
+smoothing, no coarsening, γ-weighted time step — reproduces the latter
+paper's prolate-ellipsoid collapse through its cusps (event times within
+~2–4%, energy to 2e-6); the production settings do not.
+
+**Working model:** evolve Nambu-Goto through cusps and fast contacts, and
+reconnect only slow head-on contacts (φ⁴ kink-antikink critical velocity
+v_c ≈ 0.26), pending the approach-speed census in `diagnostics/`.
+
 ## Layout
 
-| File | Role |
+| Path | Role |
 | --- | --- |
-| `membrane.py` | Mesh evolver: RK4, gauge tangential smoothing with energy-restoring Newton rescale, edge-collapse coarsening |
-| `surgery.py` | Intercommutation: throat excision, validity-constrained min-area cap/tube triangulation, dilation retries |
-| `contact.py` | Self-contact detection: KDTree pairs within `d_c`, k-ring graph exclusion, opposing-normal test, clustering |
-| `run_cascade.py` | Recursive population driver; fragmentation trees, retirement causes, census to JSON |
+| `membrane.py` | Mesh evolver: RK4, tangential smoothing with energy rescale, edge-collapse coarsening |
+| `contact.py` | Self-contact detection: KDTree vertex pairs within `d_c`, k-ring exclusion, opposing-normal test, clustering |
+| `surgery.py` | Intercommutation: excision, validity-constrained min-area caps and tubes, dilation retries |
+| `run_cascade.py` | Recursive population driver; fragmentation trees, retirement causes, census records |
 | `run_random.py` | Random initial data: flat-spectrum harmonics `l=2..l_max`, shape `eps`, normal velocity `v_amp`, optional spin `omega` |
+| `testbeds.py` | Test geometries (kicked dumbbell, torus, pancake) and the exact sphere solution |
 | `vtk_out.py` | ParaView output (per-snapshot faces, since topology changes) |
-| `run_peanut.py`, `run_kick.py`, `run_sphere.py` | Legacy symmetric testbeds; predate the generic contact/surgery path |
+| `diagnostics/` | Ellipsoid benchmark against arXiv:2605.22974; approach-speed census and its Sol job script |
+| `test_fixes.py` | Regression tests for the numerical guards and a cascade smoke test |
+| `data/census/` | Census JSONs: `prod_*` (144 production runs), `random_*` (12 earlier pilot runs) — from the invalid runs, kept for reference |
+| `data/states/` | Terminal mesh states of those runs; records' `state_file` fields name the old root location, so look files up by name here |
 
-`prod_*.json` are the census records of the production ensemble;
-`prod_*_{survived,foam}_wall*.npz` are terminal mesh states, reloadable with
-`run_cascade.load_wall` for re-evolution.
+## Numerical behaviour
 
-## Numerical invariants
+- RK4 conserves energy to ~1e-9 and angular momentum to ~1e-10 in smooth
+  evolution, and matches the exact spherical collapse.
+- `tangential_smooth` restores energy after each pass by a global rescale of
+  the proper velocity. The resulting ~1e-9 energy conservation is enforced, not
+  measured; the rescale inflates |L| and P. At cusps the pass is not gauge and
+  can change energy by 10–100% per pass.
+- `collapse_short_edges` conserves momentum exactly and reports its energy
+  change as dissipation. At a fixed absolute `lmin` it erases cusp structure
+  where the wall compresses, and nothing refines the mesh again.
+- Surgery output is checked to be a closed manifold (no duplicate faces, every
+  edge in exactly two triangles, even Euler characteristic).
 
-- Energy conserved to ~1e-9 relative during smooth evolution. Smoothing was
-  historically the only drift source: energy is convex in the gauge parameter
-  `u`, so linear interpolation is systematically lossy (Jensen). Fixed by a
-  global Newton rescale of `u` after each pass.
-- `collapse_short_edges` conserves momentum exactly; its energy change is
-  reported as dissipation, by design.
-- After surgery the mesh stays a closed manifold: no duplicate faces, every
-  edge in exactly two triangles, even Euler characteristic.
-- Surgery energy changes are physical (excised throat + seam de-crumpling) and
-  are bookkept deliberately, not a conservation failure.
+## Open issues
 
-## Design choices that look surprising but are intentional
-
-- **Loop pairing.** Surgery excises the union of *all* simultaneous contact
-  clusters at once. A pressed-together front crosses the contact threshold
-  everywhere at the same time; drilling one site at a time caused genus runaway.
-- **Travel-budget detection cadence.** Contact is checked once accumulated
-  `2*dt` reaches `d_c/2`, rather than every N steps. Fixed cadences caused all
-  the early failures.
-- **Validity-constrained min-area caps.** Existing faces and interior edges
-  cost infinity in the DP; infeasibility triggers dilation. Unconstrained
-  min-area duplicated triangles over crumpled folds; centroid fans inserted
-  spurious area and produced a fake energy *gain*.
-- **Coarsening is daughters-only.** It invalidates the pinch-detection vertex
-  mask, so combining the two raises deliberately.
-- Sub-resolution components are dropped as annihilated debris; genus > 25
-  retires a wall as `foam`. Both are modeling decisions.
-
-## Results so far
-
-Production ensemble: 144 runs (16 seeds x omega {0, 0.3, 0.6} x l_max {4, 8,
-12}), `t_max=8`, at `nsub=4`. 7049 walls.
-
-- **No permanently stable remnants.** Two walls survived to `t=8`, and both
-  died on re-evolution (`t=12.86` and `t=21.69`, the latter after ~80 crossing
-  times with energy conserved to every digit). Everything annihilates.
-- **But the decay has a deep metastability tail** — compact, flattened,
-  high-genus fragments living 50-80+ of their own crossing times.
-- **Imposed spin does not create survivors** (0/48 at each of omega=0.3 and
-  0.6; both survivors came from omega=0). Spin delays fragmentation; longevity
-  instead comes from cascade-distilled specific angular momentum.
-- **Foam fraction is 64-95% and rises monotonically with `l_max`**, which is
-  circumstantial evidence that foam is partly a resolution artifact. This is
-  the main open caveat and the motivation for the convergence campaign.
-
-## Open issues under review
-
-Findings from a code review, **not yet fixed** — recorded here so they are not
-rediscovered:
-
-1. `membrane.py` `tri_geom` normalizes the face normal without an epsilon
-   guard, so a zero-area triangle yields NaN silently and poisons the whole
-   mesh within ~3 RK4 steps. Reproduced. Probable source of the untraced
-   production NaN. Every sibling near-singularity in the file is guarded.
-2. `contact.py` k-ring exclusion (`k_ring=4`, `d_c=2*lmin`) is structurally
-   blind to a coarsened neck pinching shut: at the contact threshold such a
-   neck has ~6 vertices around its ring, putting opposite points ~3 mesh-hops
-   apart. Scale-invariant, so refinement will not fix it.
-3. `contact.py` caches the k-ring table on `id(faces)`, which CPython can reuse
-   after `collapse_short_edges` reallocates.
-4. The vertex-normal normalization is duplicated three times, guarded in only
-   one of them.
-5. `max_steps`, `GENUS_MAX`, and `min_faces` are absolute constants that do not
-   scale with `lmin`, and will need attention at `nsub=5`.
+1. Contact detection works on vertex pairs and cannot see sheets crossing
+   between vertices or folds near cusps.
+2. Surgery decides tube-vs-cap with a mean-normal heuristic instead of the
+   topology of the excised region.
+3. The smoothing energy rescale does not conserve L or P and fails at cusps.
+4. No mesh refinement: stretched regions lose resolution.
+5. Once sheets may pass through each other, a "fragment" must be defined by
+   vacuum domains, not mesh connectivity.
+6. Census bookkeeping: JSON written only at the end of a run; state filenames
+   embed the full wall id (the 255-byte limit is reached near depth 112);
+   records of walls ending in surgery lack `L1`/`P1`/`I1`; seam-coarsening
+   energy after surgery is not recorded.
+7. Initial data: a flat spectrum per (l, m) at fixed RMS `eps` puts power
+   ∝ 2l+1 per l, so `l_max=12` walls are far more crumpled and energetic than
+   `l_max=4`; CV instead fix the loop length.
 
 ## Next
 
-Resolution-convergence campaign at `nsub=5` (lmin halved, ~4x vertices). The
-deciding observable is foam energy fraction per cell against `nsub=4`: if it
-falls, foam is numerical and the survivor population should grow; if flat,
-foam is physical.
+1. Approach-speed census on Sol (`diagnostics/approach_census.py`, the 144
+   production seeds) to settle the reconnection rule.
+2. Tests first: surgery topology (neck → two genus-0 walls, pancake → genus 1,
+   no crossings left), conservation of E and L, the ellipsoid benchmark.
+3. Rewrite contact detection, the surgery decision and the evolver.
+4. Rerun the ensemble on Sol, then a resolution-convergence check.

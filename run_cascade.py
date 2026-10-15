@@ -7,7 +7,7 @@ it hits the v -> 1 guard (a caustic: the zero-thickness description ends,
 physically annihilation) or survives to t_max. The full fragmentation tree
 is returned as a list of wall records plus surgery events.
 
-Initial data helpers: kicked dumbbell (import from run_kick), torus, oblate.
+Test geometries (kicked dumbbell, torus, pancake) live in testbeds.py.
 """
 
 import numpy as np
@@ -17,69 +17,23 @@ from surgery import contact_surgery
 from vtk_out import VtkSeries, wall_block
 
 
-def torus(R=1.0, a=0.45, nu=64, nv=32):
-    """Torus mesh: tube radius a around a circle of radius R (genus 1)."""
-    iu, iv = np.meshgrid(np.arange(nu), np.arange(nv), indexing="ij")
-    U = 2 * np.pi * iu / nu
-    V = 2 * np.pi * iv / nv
-    X = np.stack([(R + a * np.cos(V)) * np.cos(U),
-                  (R + a * np.cos(V)) * np.sin(U),
-                  a * np.sin(V)], axis=-1).reshape(-1, 3)
-    vid = (iu * nv + iv).reshape(nu, nv)
-    F = []
-    for i in range(nu):
-        for j in range(nv):
-            v00, v01 = vid[i, j], vid[i, (j + 1) % nv]
-            v10, v11 = vid[(i + 1) % nu, j], vid[(i + 1) % nu, (j + 1) % nv]
-            F += [[v00, v10, v11], [v00, v11, v01]]
-    return X, np.array(F)
-
-
-def oblate(c=0.3, nsub=4):
-    """Oblate spheroid (pancake): unit sphere squashed to height c."""
-    from membrane import icosphere
-    X, F = icosphere(nsub)
-    X = X.copy()
-    X[:, 2] *= c
-    return X, F
-
-
-def kicked_oblate(c=0.3, v0=0.6, w=0.6, nsub=4):
-    """Pancake with its flat faces kicked toward each other.
-
-    Kick along the local normal (transverse gauge exact), magnitude
-    -v0 exp(-rho^2/w^2) |n.z| -- full strength at the face centers, zero at
-    the rim -- so face-face contact (the tunnel-branch test) happens before
-    the rim cusp.
-    """
-    from contact import vertex_normals
-    X, F = oblate(c, nsub)
-    mem = Membrane(X, F)
-    vn = vertex_normals(X, F)
-    rho2 = X[:, 0] ** 2 + X[:, 1] ** 2
-    vmag = -v0 * np.exp(-rho2 / w ** 2) * np.abs(vn[:, 2])
-    V = vmag[:, None] * vn
-    gam = 1.0 / np.sqrt(1 - np.einsum('ij,ij->i', V, V))
-    m = mem.sigma * mem.vertex_areas(X)
-    mem.p = (m * gam)[:, None] * V
-    mem.genus = 0
-    return mem
-
-
 def _speed(mem):
     V = mem.velocity(mem.X, mem.p)
     return np.sqrt(np.einsum('ij,ij->i', V, V))
 
 
 def ang_mom(mem):
-    """Total angular momentum L = sum x cross p (conserved by evolution;
-    changed only by surgery, which removes material)."""
+    """Total angular momentum L = sum x cross p. Conserved by the RK4 step,
+    but not by tangential_smooth (its energy rescale inflates |L|, ~2% per
+    0.4 time units on a spinning wall) or by surgery."""
     return np.cross(mem.X, mem.p).sum(axis=0)
 
 
 def inertia_eigs(mem):
     """Eigenvalues (ascending) of the energy-weighted inertia tensor about
-    the center of energy -- the CV planarity/shape statistic for walls."""
+    the center of energy: a spatial shape measure. Not CV's planarity
+    statistic, which uses the tangent directions P, Q on the Kibble-Turok
+    sphere in the loop's rest frame."""
     m = mem.sigma * mem.vertex_areas(mem.X)
     Ev = np.sqrt(m ** 2 + np.einsum('ij,ij->i', mem.p, mem.p))
     xc = (Ev[:, None] * mem.X).sum(axis=0) / Ev.sum()
@@ -93,7 +47,7 @@ def inertia_eigs(mem):
 
 def load_wall(path):
     """Rebuild a Membrane from a survivor state dump (see cascade's
-    save_survivors) so stability candidates can be re-evolved."""
+    save_states) so stability candidates can be re-evolved."""
     d = np.load(path)
     mem = Membrane(d["X"], d["faces"])
     mem.p = d["p"].copy()
@@ -104,7 +58,7 @@ def load_wall(path):
 GENUS_MAX = 25      # above this a wall is resolution-scale foam (see below)
 
 
-def cascade(mem, t_max, lmin, d_c=None, grace=0, cfl=0.2,
+def cascade(mem, t_max, lmin, d_c=None, cfl=0.2,
             vstop=0.999999, smooth_every=5, smooth_lam=0.25, coarsen_every=20,
             max_steps=None, wall_id="0", records=None, events=None,
             vtk_dir=None, dt_snap=0.02, extent_min=None, save_states=None,
@@ -116,17 +70,18 @@ def cascade(mem, t_max, lmin, d_c=None, grace=0, cfl=0.2,
     surgery. lmin is the absolute coarsening scale, inherited by fragments;
     d_c defaults to 2*lmin (the resolution floor = contact condition).
 
-    Detection cadence is an adaptive travel budget: two sheets close at most
-    2*dt per step (c = 1), so checking whenever the accumulated 2*dt reaches
-    d_c/2 guarantees no pair can cross undetected -- worst case they arrive
-    still d_c/2 apart and flag on the next check. A fixed every-N-steps
-    cadence has no such bound and lets fast sheets interpenetrate.
+    Detection cadence is an adaptive travel budget: two vertices close at
+    most 2*dt per step (c = 1), so checking whenever the accumulated 2*dt
+    reaches d_c/2 guarantees no VERTEX pair crosses d_c undetected. It does
+    not do the same for sheets: with mesh edges several times d_c, two sheets
+    can pass through each other between vertices, and the k-ring exclusion
+    hides folds near cusps entirely.
 
-    Retirement is cusp-tolerant: v > vstop on a LARGE wall is a transient
-    cusp (walls, like strings, momentarily reach v = 1 at points during
-    smooth evolution) and evolution continues, with coarsening dissipating
-    the cusp-generated sub-grid structure; only a wall that is relativistic
-    AND small (extent < extent_min, default 20*lmin) retires as a caustic.
+    Retirement is cusp-tolerant: v > vstop on a LARGE wall is a cusp and
+    evolution continues; only a wall that is relativistic AND small
+    (extent < extent_min, default 20*lmin) retires as a caustic. Cusps on
+    walls are extended cuspidal edges (arXiv:2605.22974), and tangential
+    smoothing and coarsening do not evolve through them faithfully.
     """
     if records is None:
         records = []
@@ -216,7 +171,7 @@ def cascade(mem, t_max, lmin, d_c=None, grace=0, cfl=0.2,
             mem.tangential_smooth(smooth_lam)
         if lmin and nstep % coarsen_every == 0:
             mem.collapse_short_edges(lmin)
-        if nstep >= grace and travel >= 0.5 * d_c:
+        if travel >= 0.5 * d_c:
             travel = 0.0
             clusters = det.find(mem, d_c)
             if clusters:
@@ -257,11 +212,13 @@ def cascade(mem, t_max, lmin, d_c=None, grace=0, cfl=0.2,
                 for i, w in enumerate(walls):
                     if lmin:
                         w.collapse_short_edges(lmin)   # seam cleanup
-                    cascade(w, t_max, lmin, d_c, grace, cfl,
-                            vstop, smooth_every, smooth_lam, coarsen_every,
-                            max_steps, f"{wall_id}.{i}", records, events,
-                            vtk_dir, dt_snap, extent_min, save_states,
-                            genus_max)
+                    cascade(w, t_max, lmin, d_c=d_c, cfl=cfl, vstop=vstop,
+                            smooth_every=smooth_every, smooth_lam=smooth_lam,
+                            coarsen_every=coarsen_every, max_steps=max_steps,
+                            wall_id=f"{wall_id}.{i}", records=records,
+                            events=events, vtk_dir=vtk_dir, dt_snap=dt_snap,
+                            extent_min=extent_min, save_states=save_states,
+                            genus_max=genus_max)
                 return records, events
 
 
@@ -277,7 +234,7 @@ def summarize(records, events):
 
 
 if __name__ == "__main__":
-    from run_kick import kicked_peanut
+    from testbeds import kicked_peanut
     mem = kicked_peanut()
     F = mem.faces
     e = np.linalg.norm(mem.X[F[:, 0]] - mem.X[F[:, 1]], axis=1)
