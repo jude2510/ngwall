@@ -11,9 +11,11 @@ Each wall is evolved through the full contact/surgery cascade and the census
 (fragmentation tree with energy, momentum, angular momentum, inertia
 eigenvalues, genus, survival) is written to JSON.
 
-Determinism: BLAS is pinned to one thread (set before numpy import) so a
-given seed reproduces its tree bit-for-bit; multithreaded reductions were
-observed to flip knife-edge retirement branches.
+BLAS is pinned to one thread (set before numpy import) because multithreaded
+reductions were observed to flip knife-edge retirement branches. This does
+not make runs reproducible on macOS, where Accelerate ignores the pin:
+repeated runs of one seed give different trees, though the same ensemble
+statistics.
 """
 
 import os

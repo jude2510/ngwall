@@ -1,36 +1,29 @@
-"""Intercommutation surgery for a pinching Nambu-Goto wall.
+"""Intercommutation surgery for a self-contacting Nambu-Goto wall.
 
-When a closed wall's surface self-contacts at a neck (detected here as a ring
-of vertices approaching the symmetry axis, rho -> 0), the wall reconnects:
-the throat is excised and the two exposed boundary loops are capped, splitting
-the mesh into two closed daughter walls that then evolve independently.
+contact_surgery reconnects a wall at a contact cluster found by
+contact.ContactDetector: it excises the triangles around the contact, drops
+sub-resolution surviving components as annihilated debris, joins pairs of
+boundary loops with tubes, caps the remaining loops, and splits the result
+into its connected components.
 
-Energy bookkeeping is report-only by design: unlike tangential smoothing,
-surgery is not pure gauge -- the excised throat is the analog of the string
-"bridge" and its energy is physically lost (radiated / annihilated). The
-returned report carries E_before, E_removed, the daughters' energies and the
-net dE, dP so that the loss can be studied as an observable. Vertex proper
-velocities u = gamma*V are preserved through the split and momenta rebuilt
-from the new vertex areas, p = sigma*Atil*u (interior vertices are untouched
-since their areas do not change).
+Energy bookkeeping is report-only: the excised region's energy is physically
+lost (radiated / annihilated), and dE, dP are returned as observables.
+Proper velocities u = gamma*V are carried through and momenta rebuilt from
+the new vertex areas, p = sigma*Atil*u.
 
-Caps introduce no new vertices: each boundary loop is closed by its
-minimum-area triangulation (DP, O(n^3)). At the pinch the throat mesh is
-sub-grid crumple, so the cut boundary is a strongly zigzagging space curve
-(perimeter >> 2*pi*rho); a centroid fan over such a loop sweeps a large cone
-and inserts spurious area*gamma energy at the seam, while the minimum-area
-stitch bounds the inserted area from below among triangulations.
+Caps and tubes add no vertices: they are minimum-area triangulations (DP)
+constrained not to duplicate existing faces or interior edges. A centroid fan
+over a zigzagging cut boundary would sweep a large cone and insert spurious
+area*gamma energy at the seam.
+
+Known problem (2026-10 review): whether two loops are tube-joined or capped
+is decided by a mean-normal / centroid-distance heuristic. It turns a
+pinching neck into a tunnel and drills many holes in a pressed pancake; the
+decision should come from the topology of the excised region instead.
 """
 
 import numpy as np
 from membrane import Membrane
-
-
-def detect_pinch(mem, mask, rho_c=0.02):
-    """Return the pinch height z* if min rho over masked vertices < rho_c."""
-    rho = np.hypot(mem.X[:, 0], mem.X[:, 1])
-    a = np.nonzero(mask)[0][np.argmin(rho[mask])]
-    return mem.X[a, 2] if rho[a] < rho_c else None
 
 
 def _boundary_loops(faces):
@@ -150,72 +143,6 @@ def _components(nvert, faces):
     return label, comp
 
 
-def pinch_split(mem, z_star, r_cut=0.04, h=0.03):
-    """Excise the throat at z*, cap the two loops, split into daughters.
-
-    Returns (daughters, report): a list of Membrane objects and a dict with
-    the surgery energy/momentum bookkeeping.
-    """
-    X, p, F = mem.X, mem.p, mem.faces
-    rho = np.hypot(X[:, 0], X[:, 1])
-    S = (rho < r_cut) & (np.abs(X[:, 2] - z_star) < h)
-    if not S.any():
-        raise ValueError("empty throat band; increase r_cut/h")
-    keep = ~S[F].any(axis=1)
-    F2 = F[keep]
-
-    loops = _boundary_loops(F2)
-    if len(loops) != 2:
-        raise ValueError(f"expected 2 boundary loops, found {len(loops)}")
-
-    E_before = mem.energy()
-    P_before = p.sum(axis=0)
-    mE = mem.sigma * mem.vertex_areas(X)
-    Ev = np.sqrt(mE ** 2 + np.einsum('ij,ij->i', p, p))
-    E_removed = Ev[S].sum()
-    V = mem.velocity(X, p)
-    gam = 1.0 / np.sqrt(np.clip(1 - np.einsum('ij,ij->i', V, V), 1e-14, None))
-    u = gam[:, None] * V
-
-    # cap each loop with its minimum-area triangulation (no new vertices);
-    # feed the loop reversed so the cap winds against the boundary direction
-    Xa, ua = X, u
-    newF = list(F2)
-    for loop in loops:
-        R = np.array(loop[::-1])
-        for i, k, j in _min_area_cap(X[R]):
-            newF.append([R[i], R[k], R[j]])
-    newF = np.array(newF)
-
-    label, ncomp = _components(len(Xa), newF)
-    if ncomp != 2:
-        raise ValueError(f"expected 2 daughters, found {ncomp}")
-
-    daughters, reports = [], []
-    for cid in range(ncomp):
-        vids = np.nonzero(label == cid)[0]
-        remap = np.full(len(Xa), -1)
-        remap[vids] = np.arange(len(vids))
-        fsub = remap[newF[(label[newF[:, 0]] == cid)]]
-        d = Membrane(Xa[vids], fsub, sigma=mem.sigma)
-        d.t = mem.t
-        md = d.sigma * d.vertex_areas(d.X)
-        d.p = md[:, None] * ua[vids]
-        chi = len(vids) - _edge_count(fsub) + len(fsub)
-        if chi != 2:
-            raise ValueError(f"daughter {cid} not a closed surface (chi={chi})")
-        daughters.append(d)
-        reports.append(d.energy())
-
-    report = dict(E_before=E_before, E_removed=E_removed,
-                  E_daughters=reports, dE=sum(reports) - E_before,
-                  dP=np.linalg.norm(
-                      sum(d.p.sum(axis=0) for d in daughters) - P_before),
-                  n_removed=int(S.sum()),
-                  loop_sizes=[len(l) for l in loops])
-    return daughters, report
-
-
 def _edge_count(faces):
     e = set()
     for a, b, c in faces:
@@ -307,27 +234,6 @@ def _assembly_problem(faces):
         if chi > 2 or chi % 2:
             return f"component {cid} has chi = {chi}"
     return ""
-
-
-def _tri_components(faces):
-    """Number of connected components of a triangle set (shared vertices)."""
-    if len(faces) == 0:
-        return 0
-    parent = {}
-
-    def find(x):
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    for tri in faces:
-        for v in tri:
-            parent.setdefault(v, v)
-        r = find(tri[0])
-        for v in tri[1:]:
-            parent[find(v)] = r
-    return len({find(v) for v in parent})
 
 
 def _min_area_tube(PA, PB, VA=None, VB=None, bad_faces=None, bad_edges=None):
@@ -427,10 +333,10 @@ def contact_surgery(mem, cluster, max_dilate=8, min_faces=4, d_c=None,
     scale are locally wall-antiwall and annihilate); then pair the remaining
     boundary loops -- two loops whose mean surface normals FACE each other
     (dot < -0.5) within pair_dist are tunnel-stitched (reconnection), and
-    every unpaired loop is capped (split). Throat loops bulge outward, never
-    face, and so cap; facing sheets tunnel on first touch; renewed contact
-    around an existing tunnel strands the old sleeve as debris and
-    re-tunnels the outer loops -- the hole WIDENS instead of adding handles.
+    every unpaired loop is capped (split). This pairing test misclassifies
+    in practice: a pinching neck's two loops also have opposed mean normals
+    and get tunnel-joined instead of capped, and a pressed pancake gains many
+    handles instead of one widening hole (see the module docstring).
 
     A shredded excision (non-manifold cut, pinched vertices, or a stitched
     candidate that fails assembly checks) dilates the flagged region by one
@@ -631,22 +537,3 @@ def contact_surgery(mem, cluster, max_dilate=8, min_faces=4, d_c=None,
                   genus=[w.genus for w in walls],
                   n_tunnel=n_tunnel, n_cap=n_cap)
     return walls, report
-
-
-def _selftest_split():
-    """Topology check: splitting an icosphere at its equator gives 2 caps."""
-    from membrane import icosphere
-    X, F = icosphere(3)
-    mem = Membrane(X, F)
-    mem.p = 0.3 * mem.sigma * mem.vertex_areas(X)[:, None] * (-X)  # infalling
-    # equator band plays the role of the throat: rho there is ~1, so widen
-    daughters, rep = pinch_split(mem, z_star=0.0, r_cut=2.0, h=0.15)
-    assert len(daughters) == 2
-    assert rep["dP"] < 1e-12 + abs(rep["dE"]) * 10  # loose: report sanity
-    for d in daughters:
-        assert len(_boundary_loops(d.faces)) == 0  # closed
-        z = d.X[:, 2]
-        assert (z > -0.2).all() or (z < 0.2).all()  # hemispheres
-
-
-_selftest_split()
