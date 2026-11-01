@@ -37,6 +37,11 @@ smoothing, no coarsening, γ-weighted time step — reproduces the latter
 paper's prolate-ellipsoid collapse through its cusps (event times within
 ~2–4%, energy to 2e-6); the production settings do not.
 
+![Prolate wall collapse: bare evolver vs production settings against eikonal ray tracing](figures/benchmark_comparison.png)
+
+*Prolate wall from arXiv:2605.22974: the bare evolver (top) follows the paper
+through its cusps; the old production settings (bottom) do not.*
+
 **Approach-speed census: walls self-intersect only at folds.** The 144
 production initial conditions were evolved as pure Nambu-Goto with the bare
 evolver (sheets pass through each other) to t = 2, plus a resolution check: 24
@@ -52,6 +57,12 @@ of them at both nsub = 4 and nsub = 5 to t = 1.5 (`diagnostics/`,
   swallowtail-type self-intersections growing out of caustics. Their counts
   converge with resolution (per run, nsub 4 → 5: 45 → 42, 215 → 206,
   482 → 589 for `l_max` 4, 8, 12).
+
+![Census resolution check: contact counts, separation at contact, closing speeds](figures/census_summary.png)
+
+*Resolution check: self-contact counts converge, the sheets' separation at
+contact halves with the mesh spacing (every contact starts at a fold), and the
+closing speeds are unchanged.*
 
 **So random closed walls do not undergo Copi-Vachaspati-style reconnection:
 they collapse through folds.** Two questions remain open: what the overlapping
@@ -76,6 +87,7 @@ reconnection.
 | `data/states/` | Terminal mesh states of those runs; records' `state_file` fields name the old root location, so look files up by name here |
 | `data/approach_census/` | Approach-speed census v1: 144 runs, nsub = 4, to t = 2 |
 | `data/approach_census_v2/` | Census v2 resolution check: 24 initial conditions × nsub 4 and 5, to t = 1.5 |
+| `figures/` | README figures; regenerate with `diagnostics/plot_*.py` |
 
 ## Numerical behaviour
 
